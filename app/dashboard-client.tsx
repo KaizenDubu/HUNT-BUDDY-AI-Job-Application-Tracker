@@ -171,6 +171,29 @@ export default function DashboardClient({
       ...Array.from({ length: totalDays }, (_, index) => index + 1),
     ];
   }, [currentDate]);
+  const trackerStats = useMemo(() => {
+    const uniqueCompanies = new Set(
+      jobs
+        .map((job) => job.companyName.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const statusCounts = statuses.reduce<Record<JobStatus, number>>((counts, status) => {
+      counts[status] = jobs.filter((job) => job.status === status).length;
+      return counts;
+    }, {
+      SAVED: 0,
+      APPLIED: 0,
+      INTERVIEW: 0,
+      OFFER: 0,
+      REJECTED: 0,
+    });
+
+    return {
+      totalApplications: jobs.length,
+      totalCompanies: uniqueCompanies.size,
+      statusCounts,
+    };
+  }, [jobs]);
 
   const insertJob = async (job: Omit<JobApplication, 'id'>) => {
     const payload = jobToInsert(job, userId);
@@ -370,6 +393,33 @@ export default function DashboardClient({
                 >
                   {day}
                 </button>
+              ))}
+            </div>
+          </section>
+
+          <section className={`mt-4 rounded-lg border p-4 transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-950/40' : 'border-stone-200 bg-[#fffdf8]'}`}>
+            <div className="mb-4 flex items-center justify-between">
+              <p className="text-sm font-semibold">Tracker stats</p>
+              <Icon name="briefcase" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className={`rounded-lg border p-3 text-center ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#f7f3ea]'}`}>
+                <p className="text-xl font-bold">{trackerStats.totalApplications}</p>
+                <p className={`text-[11px] font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Applications</p>
+              </div>
+              <div className={`rounded-lg border p-3 text-center ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#f7f3ea]'}`}>
+                <p className="text-xl font-bold">{trackerStats.totalCompanies}</p>
+                <p className={`text-[11px] font-medium ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Companies</p>
+              </div>
+            </div>
+            <div className="mt-4 space-y-2">
+              {statuses.map((status) => (
+                <div key={status} className="flex items-center justify-between gap-3 text-sm">
+                  <span className={`rounded-full px-2 py-1 text-[11px] font-semibold ${statStyles[status]}`}>
+                    {statusLabel(status)}
+                  </span>
+                  <span className="font-semibold">{trackerStats.statusCounts[status]}</span>
+                </div>
               ))}
             </div>
           </section>
