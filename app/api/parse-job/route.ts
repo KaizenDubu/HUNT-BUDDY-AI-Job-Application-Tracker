@@ -1,13 +1,18 @@
 import { NextResponse } from 'next/server';
 import Groq from 'groq-sdk';
 
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-});
-
-// Notice the named export "POST"
 export async function POST(req: Request) {
   try {
+    const apiKey = process.env.GROQ_API_KEY;
+
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'GROQ_API_KEY is not configured.' },
+        { status: 500 }
+      );
+    }
+
+    const groq = new Groq({ apiKey });
     const { rawText } = await req.json();
 
     if (!rawText || typeof rawText !== 'string') {
