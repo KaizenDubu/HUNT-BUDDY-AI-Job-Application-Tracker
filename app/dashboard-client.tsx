@@ -194,6 +194,7 @@ export default function DashboardClient({
       statusCounts,
     };
   }, [jobs]);
+  const displayedJobs = useMemo(() => rejectedLast(jobs), [jobs]);
 
   const insertJob = async (job: Omit<JobApplication, 'id'>) => {
     const payload = jobToInsert(job, userId);
@@ -550,7 +551,7 @@ export default function DashboardClient({
                   </tr>
                 </thead>
                 <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800' : 'divide-stone-100'}`}>
-                  {jobs.map((job) => (
+                  {displayedJobs.map((job) => (
                     <tr key={job.id} className={`align-top transition-colors ${isDarkMode ? 'hover:bg-slate-800/70' : 'hover:bg-[#f7f3ea]'}`}>
                       {deleteMode && (
                         <td className="px-3 py-3">
@@ -702,4 +703,25 @@ function normalizeStatus(status: string | null): JobStatus {
 
 function statusLabel(status: JobStatus) {
   return status.charAt(0) + status.slice(1).toLowerCase();
+}
+
+function rejectedLast(jobs: JobApplication[]) {
+  return jobs
+    .map((job, index) => ({ job, index }))
+    .sort((first, second) => {
+      if (first.job.status === second.job.status) {
+        return first.index - second.index;
+      }
+
+      if (first.job.status === 'REJECTED') {
+        return 1;
+      }
+
+      if (second.job.status === 'REJECTED') {
+        return -1;
+      }
+
+      return first.index - second.index;
+    })
+    .map(({ job }) => job);
 }
