@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
+import HuntBuddyLogo from '../hunt-buddy-logo';
 
 const GoogleIcon = () => (
   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
@@ -10,22 +11,6 @@ const GoogleIcon = () => (
     <path d="M10 20c2.7 0 4.97-.9 6.62-2.43l-3.24-2.52c-.9.6-2.04.96-3.38.96-2.6 0-4.8-1.75-5.59-4.12H1.07v2.6A10 10 0 0 0 10 20z" fill="#34A853"/>
     <path d="M4.41 11.89A6.01 6.01 0 0 1 4.1 10c0-.66.11-1.3.31-1.89V5.51H1.07A10 10 0 0 0 0 10c0 1.61.39 3.13 1.07 4.49l3.34-2.6z" fill="#FBBC05"/>
     <path d="M10 3.96c1.47 0 2.79.5 3.83 1.5l2.87-2.87C14.96.99 12.69 0 10 0A10 10 0 0 0 1.07 5.51l3.34 2.6C5.2 5.71 7.4 3.96 10 3.96z" fill="#EA4335"/>
-  </svg>
-)
-
-const HuntBuddyLogo = () => (
-  <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
-    <rect width="36" height="36" rx="10" fill="#2563eb"/>
-    {/* briefcase body */}
-    <rect x="8" y="15" width="20" height="13" rx="2.5" fill="white" opacity="0.95"/>
-    {/* briefcase handle */}
-    <path d="M14 15v-2a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" stroke="white" strokeWidth="1.8" strokeLinecap="round" fill="none"/>
-    {/* center clasp */}
-    <rect x="15.5" y="19.5" width="5" height="3.5" rx="1" fill="#2563eb" opacity="0.7"/>
-    {/* magnifying glass */}
-    <circle cx="25" cy="24" r="4.5" fill="#1d4ed8"/>
-    <circle cx="25" cy="24" r="2.8" stroke="white" strokeWidth="1.5" fill="none"/>
-    <line x1="27" y1="26" x2="29" y2="28" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
   </svg>
 )
 
@@ -60,7 +45,7 @@ export default function LoginPage() {
       if (error) {
         setErrorMsg(error.message);
       } else {
-        router.push('/');
+        router.push('/dashboard');
         router.refresh();
       }
     }
@@ -95,7 +80,7 @@ export default function LoginPage() {
         style={{ background: 'linear-gradient(160deg, #2563eb 0%, #1d4ed8 60%, #1e40af 100%)' }}
       >
         <div className="flex items-center gap-3">
-          <HuntBuddyLogo />
+          <HuntBuddyLogo size={36} />
           <span className="text-white font-bold text-xl tracking-tight">Hunt Buddy</span>
         </div>
 
@@ -116,7 +101,7 @@ export default function LoginPage() {
 
           {/* mobile logo */}
           <div className="flex items-center gap-2.5 mb-8 lg:hidden">
-            <HuntBuddyLogo />
+            <HuntBuddyLogo size={36} />
             <span className="font-bold text-xl text-gray-900 tracking-tight">Hunt Buddy</span>
           </div>
 

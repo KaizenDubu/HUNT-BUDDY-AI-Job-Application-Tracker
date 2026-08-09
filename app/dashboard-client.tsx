@@ -1,9 +1,10 @@
 'use client';
 
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import type { ApplicationRecord } from './application-types';
+import HuntBuddyLogo from './hunt-buddy-logo';
 
 type JobStatus = 'SAVED' | 'APPLIED' | 'INTERVIEW' | 'OFFER' | 'REJECTED';
 
@@ -125,10 +126,12 @@ function Icon({ name }: { name: 'briefcase' | 'calendar' | 'plus' | 'spark' | 'l
 }
 
 export default function DashboardClient({
+  demoMode = false,
   initialApplications,
   userEmail,
   userId,
 }: {
+  demoMode?: boolean;
   initialApplications: ApplicationRecord[];
   userEmail: string;
   userId: string;
@@ -143,13 +146,11 @@ export default function DashboardClient({
   const [deleteMode, setDeleteMode] = useState(false);
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const [message, setMessage] = useState('');
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState(() => (
+    typeof window !== 'undefined' && localStorage.getItem('hunt-buddy-theme') === 'dark'
+  ));
   const router = useRouter();
   const supabase = createClient();
-
-  useEffect(() => {
-    setIsDarkMode(localStorage.getItem('hunt-buddy-theme') === 'dark');
-  }, []);
 
   const toggleTheme = () => {
     setIsDarkMode((currentMode) => {
@@ -197,6 +198,11 @@ export default function DashboardClient({
   const displayedJobs = useMemo(() => rejectedLast(jobs), [jobs]);
 
   const insertJob = async (job: Omit<JobApplication, 'id'>) => {
+    if (demoMode) {
+      setJobs((currentJobs) => [{ id: `demo-${Date.now()}`, ...job }, ...currentJobs]);
+      return;
+    }
+
     const payload = jobToInsert(job, userId);
     const { data, error } = await supabase
       .from('applications')
@@ -228,6 +234,11 @@ export default function DashboardClient({
   ) => {
     const payload = fieldToUpdate(field, value);
     if (!payload) return;
+
+    if (demoMode) {
+      setMessage('Demo changes saved locally.');
+      return;
+    }
 
     setSavingId(id);
     const { error } = await supabase
@@ -269,6 +280,15 @@ export default function DashboardClient({
     setDeletingId('selected');
     setMessage('');
 
+    if (demoMode) {
+      setJobs((currentJobs) => currentJobs.filter((job) => !selectedJobIds.includes(job.id)));
+      setSelectedJobIds([]);
+      setDeleteMode(false);
+      setDeletingId(null);
+      setMessage('Selected demo listings deleted.');
+      return;
+    }
+
     const { error } = await supabase
       .from('applications')
       .delete()
@@ -298,6 +318,24 @@ export default function DashboardClient({
     setMessage('');
 
     try {
+      if (demoMode) {
+        const lines = rawText.split('\n').map((line) => line.trim()).filter(Boolean);
+        await insertJob({
+          companyName: lines[0] ?? 'Demo company',
+          jobTitle: lines[1] ?? 'Imported role',
+          location: 'Demo location',
+          employmentType: 'Full-time',
+          salaryRange: 'Not listed',
+          status: 'APPLIED',
+          appliedAt: '',
+          keySkills: ['AI import', 'Job tracking'],
+          summary: rawText.slice(0, 180),
+        });
+        setRawText('');
+        setMessage('Demo job added locally.');
+        return;
+      }
+
       const response = await fetch('/api/parse-job', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -346,6 +384,11 @@ export default function DashboardClient({
   };
 
   const handleSignOut = async () => {
+    if (demoMode) {
+      router.push('/');
+      return;
+    }
+
     await supabase.auth.signOut();
     router.push('/login');
     router.refresh();
@@ -359,12 +402,10 @@ export default function DashboardClient({
       <div className="flex min-h-screen">
         <aside className={`hidden w-64 shrink-0 border-r px-5 py-6 transition-colors lg:block ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fbf8f1]'}`}>
           <div className="mb-8 flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-600 text-white">
-              <Icon name="briefcase" />
-            </div>
+            <HuntBuddyLogo size={40} />
             <div>
               <p className="text-sm font-bold">Hunt Buddy</p>
-              <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Job dashboard</p>
+              <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>Job Tracker</p>
             </div>
           </div>
 
@@ -375,7 +416,7 @@ export default function DashboardClient({
             </button>
             <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'}`}>
               <Icon name="calendar" />
-              Calendar
+              Calendar (soon)
             </button>
           </nav>
 
@@ -430,7 +471,7 @@ export default function DashboardClient({
           <header className={`mb-6 flex flex-col gap-4 border-b pb-5 transition-colors sm:flex-row sm:items-center sm:justify-between ${isDarkMode ? 'border-slate-800' : 'border-stone-200'}`}>
             <div>
               <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>{userEmail}</p>
-              <h1 className={`text-2xl font-bold tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-950'}`}>Welcome Back!</h1>
+              <h1 className={`text-2xl font-bold tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-950'}`}>{demoMode ? 'Demo workspace' : 'Welcome Back!'}</h1>
             </div>
             <div className="flex gap-2">
               <button
@@ -445,7 +486,7 @@ export default function DashboardClient({
                 className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
               >
                 <Icon name="logout" />
-                Sign out
+                {demoMode ? 'Exit demo' : 'Sign out'}
               </button>
             </div>
           </header>
