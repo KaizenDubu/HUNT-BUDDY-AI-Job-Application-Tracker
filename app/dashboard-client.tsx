@@ -1,6 +1,6 @@
 'use client';
 
-import { type FormEvent, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import type { ApplicationRecord } from './application-types';
@@ -23,6 +23,32 @@ type JobApplication = {
 
 type EditableJobField = Exclude<keyof JobApplication, 'id'>;
 type ManualTextField = Exclude<EditableJobField, 'status' | 'keySkills'>;
+type ModalMode = 'add' | 'edit';
+type StatusFilter = JobStatus | 'ALL';
+type DashboardSection = 'applications' | 'calendar';
+type CalendarEventType = 'APPLIED' | 'INTERVIEW' | 'FOLLOW_UP' | 'REMINDER';
+type CalendarReminderType = Exclude<CalendarEventType, 'APPLIED'>;
+type CalendarReminder = {
+  id: string;
+  applicationId: string;
+  title: string;
+  date: string;
+  type: CalendarReminderType;
+  note: string;
+  createdAt: string;
+};
+type CalendarReminderForm = Omit<CalendarReminder, 'id' | 'createdAt'>;
+type CalendarEvent = {
+  id: string;
+  applicationId: string;
+  companyName: string;
+  jobTitle: string;
+  title: string;
+  date: string;
+  type: CalendarEventType;
+  note: string;
+  reminderId?: string;
+};
 type ApplicationInsert = {
   user_id: string;
   company_name: string;
@@ -63,6 +89,8 @@ const emptyJob = (): Omit<JobApplication, 'id'> => ({
 });
 
 const statuses: JobStatus[] = ['SAVED', 'APPLIED', 'INTERVIEW', 'OFFER', 'REJECTED'];
+const statusTabs: StatusFilter[] = ['ALL', ...statuses];
+const reminderTypes: CalendarReminderType[] = ['FOLLOW_UP', 'INTERVIEW', 'REMINDER'];
 
 const manualTextFields: Array<[ManualTextField, string]> = [
   ['companyName', 'Company name'],
@@ -80,6 +108,20 @@ const statStyles: Record<JobStatus, string> = {
   INTERVIEW: 'bg-amber-100 text-amber-800',
   OFFER: 'bg-emerald-100 text-emerald-700',
   REJECTED: 'bg-rose-100 text-rose-700',
+};
+
+const calendarTypeStyles: Record<CalendarEventType, string> = {
+  APPLIED: 'bg-blue-100 text-blue-700',
+  INTERVIEW: 'bg-amber-100 text-amber-800',
+  FOLLOW_UP: 'bg-violet-100 text-violet-700',
+  REMINDER: 'bg-slate-100 text-slate-700',
+};
+
+const calendarDotStyles: Record<CalendarEventType, string> = {
+  APPLIED: 'bg-blue-500',
+  INTERVIEW: 'bg-amber-500',
+  FOLLOW_UP: 'bg-violet-500',
+  REMINDER: 'bg-slate-500',
 };
 
 function Icon({ name }: { name: 'briefcase' | 'calendar' | 'plus' | 'spark' | 'logout' | 'sun' | 'moon' | 'trash' }) {
@@ -136,10 +178,37 @@ export default function DashboardClient({
   userEmail: string;
   userId: string;
 }) {
+  const reminderStorageKey = `hunt-buddy-calendar-reminders-${demoMode ? 'demo' : userId}`;
   const [jobs, setJobs] = useState<JobApplication[]>(() => initialApplications.map(applicationToJob));
   const [rawText, setRawText] = useState('');
-  const [manualOpen, setManualOpen] = useState(false);
-  const [manualJob, setManualJob] = useState(emptyJob());
+  const [activeSection, setActiveSection] = useState<DashboardSection>('applications');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
+  const [jobModal, setJobModal] = useState<{
+    isOpen: boolean;
+    mode: ModalMode;
+    jobId: string | null;
+    values: Omit<JobApplication, 'id'>;
+  }>(() => ({
+    isOpen: false,
+    mode: 'add',
+    jobId: null,
+    values: emptyJob(),
+  }));
+  const [detailJobId, setDetailJobId] = useState<string | null>(null);
+  const [calendarReminders, setCalendarReminders] = useState<CalendarReminder[]>(() =>
+    readCalendarReminders(reminderStorageKey)
+  );
+  const [reminderModalOpen, setReminderModalOpen] = useState(false);
+  const [reminderForm, setReminderForm] = useState<CalendarReminderForm>(() => ({
+    applicationId: '',
+    title: '',
+    date: toDateInputValue(new Date()),
+    type: 'FOLLOW_UP',
+    note: '',
+  }));
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => toDateInputValue(new Date()));
+  const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()));
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -152,6 +221,14 @@ export default function DashboardClient({
   const router = useRouter();
   const supabase = createClient();
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(reminderStorageKey, JSON.stringify(calendarReminders));
+    } catch {
+      return;
+    }
+  }, [calendarReminders, reminderStorageKey]);
+
   const toggleTheme = () => {
     setIsDarkMode((currentMode) => {
       const nextMode = !currentMode;
@@ -161,17 +238,18 @@ export default function DashboardClient({
   };
 
   const currentDate = useMemo(() => new Date(), []);
-  const monthLabel = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  const todayDate = toDateInputValue(currentDate);
+  const monthLabel = calendarMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   const days = useMemo(() => {
-    const year = currentDate.getFullYear();
-    const month = currentDate.getMonth();
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
     const totalDays = new Date(year, month + 1, 0).getDate();
     const firstDay = new Date(year, month, 1).getDay();
     return [
       ...Array.from({ length: firstDay }, () => null),
       ...Array.from({ length: totalDays }, (_, index) => index + 1),
     ];
-  }, [currentDate]);
+  }, [calendarMonth]);
   const trackerStats = useMemo(() => {
     const uniqueCompanies = new Set(
       jobs
@@ -196,6 +274,37 @@ export default function DashboardClient({
     };
   }, [jobs]);
   const displayedJobs = useMemo(() => rejectedLast(jobs), [jobs]);
+  const filteredJobs = useMemo(() => {
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+
+    return displayedJobs.filter((job) => {
+      const matchesSearch =
+        !normalizedQuery ||
+        [job.companyName, job.jobTitle, job.location]
+          .join(' ')
+          .toLowerCase()
+          .includes(normalizedQuery);
+      const matchesStatus = statusFilter === 'ALL' || job.status === statusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [displayedJobs, searchQuery, statusFilter]);
+  const detailJob = useMemo(
+    () => jobs.find((job) => job.id === detailJobId) ?? null,
+    [jobs, detailJobId]
+  );
+  const calendarEvents = useMemo(() => buildCalendarEvents(jobs, calendarReminders), [jobs, calendarReminders]);
+  const calendarEventsByDate = useMemo(() => {
+    return calendarEvents.reduce<Record<string, CalendarEvent[]>>((eventsByDate, event) => {
+      eventsByDate[event.date] = [...(eventsByDate[event.date] ?? []), event];
+      return eventsByDate;
+    }, {});
+  }, [calendarEvents]);
+  const selectedDayEvents = calendarEventsByDate[selectedCalendarDate] ?? [];
+  const upcomingEvents = useMemo(
+    () => calendarEvents.filter((event) => event.date >= todayDate).slice(0, 5),
+    [calendarEvents, todayDate]
+  );
 
   const insertJob = async (job: Omit<JobApplication, 'id'>) => {
     if (demoMode) {
@@ -215,6 +324,56 @@ export default function DashboardClient({
     }
 
     setJobs((currentJobs) => [applicationToJob(data as ApplicationRecord), ...currentJobs]);
+  };
+
+  const openAddJobModal = () => {
+    setJobModal({
+      isOpen: true,
+      mode: 'add',
+      jobId: null,
+      values: emptyJob(),
+    });
+  };
+
+  const openEditJobModal = (job: JobApplication) => {
+    setJobModal({
+      isOpen: true,
+      mode: 'edit',
+      jobId: job.id,
+      values: jobToFormValues(job),
+    });
+  };
+
+  const closeJobModal = () => {
+    setJobModal((currentModal) => ({
+      ...currentModal,
+      isOpen: false,
+      jobId: null,
+      values: emptyJob(),
+    }));
+  };
+
+  const updateJobRecord = async (id: string, job: Omit<JobApplication, 'id'>) => {
+    if (demoMode) {
+      setJobs((currentJobs) =>
+        currentJobs.map((currentJob) => (currentJob.id === id ? { id, ...job } : currentJob))
+      );
+      return;
+    }
+
+    const { error } = await supabase
+      .from('applications')
+      .update({ ...jobToUpdate(job), updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('user_id', userId);
+
+    if (error) {
+      throw error;
+    }
+
+    setJobs((currentJobs) =>
+      currentJobs.map((currentJob) => (currentJob.id === id ? { id, ...job } : currentJob))
+    );
   };
 
   const updateJobLocal = <Field extends EditableJobField>(
@@ -254,6 +413,61 @@ export default function DashboardClient({
     }
 
     setMessage('Changes saved.');
+  };
+
+  const moveCalendarMonth = (direction: -1 | 1) => {
+    setCalendarMonth((currentMonth) =>
+      new Date(currentMonth.getFullYear(), currentMonth.getMonth() + direction, 1)
+    );
+  };
+
+  const openReminderModal = (date = selectedCalendarDate, applicationId = '') => {
+    setReminderForm({
+      applicationId,
+      title: '',
+      date,
+      type: 'FOLLOW_UP',
+      note: '',
+    });
+    setReminderModalOpen(true);
+  };
+
+  const handleReminderSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!reminderForm.date) {
+      setMessage('Choose a date for this calendar item.');
+      return;
+    }
+
+    const selectedJob = jobs.find((job) => job.id === reminderForm.applicationId);
+    const fallbackTitle = selectedJob
+      ? `${calendarTypeLabel(reminderForm.type)}: ${selectedJob.companyName || selectedJob.jobTitle}`
+      : calendarTypeLabel(reminderForm.type);
+
+    setCalendarReminders((currentReminders) => [
+      {
+        id: `calendar-${Date.now()}`,
+        applicationId: reminderForm.applicationId,
+        title: reminderForm.title.trim() || fallbackTitle,
+        date: reminderForm.date,
+        type: reminderForm.type,
+        note: reminderForm.note.trim(),
+        createdAt: new Date().toISOString(),
+      },
+      ...currentReminders,
+    ]);
+    setSelectedCalendarDate(reminderForm.date);
+    setCalendarMonth(startOfMonth(new Date(`${reminderForm.date}T00:00:00`)));
+    setReminderModalOpen(false);
+    setMessage('Calendar item added.');
+  };
+
+  const removeCalendarReminder = (id: string) => {
+    setCalendarReminders((currentReminders) =>
+      currentReminders.filter((reminder) => reminder.id !== id)
+    );
+    setMessage('Calendar item removed.');
   };
 
   const toggleSelectedJob = (id: string) => {
@@ -367,18 +581,22 @@ export default function DashboardClient({
     }
   };
 
-  const handleManualSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleJobModalSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setLoading(true);
     setMessage('');
-    insertJob(manualJob)
+
+    const saveAction = jobModal.mode === 'edit' && jobModal.jobId
+      ? updateJobRecord(jobModal.jobId, jobModal.values)
+      : insertJob(jobModal.values);
+
+    saveAction
       .then(() => {
-        setManualJob(emptyJob());
-        setManualOpen(false);
-        setMessage('Manual job added.');
+        closeJobModal();
+        setMessage(jobModal.mode === 'edit' ? 'Job updated.' : 'Manual job added.');
       })
       .catch((error) => {
-        setMessage(error instanceof Error ? error.message : 'Could not add this job.');
+        setMessage(error instanceof Error ? error.message : 'Could not save this job.');
       })
       .finally(() => setLoading(false));
   };
@@ -410,32 +628,110 @@ export default function DashboardClient({
           </div>
 
           <nav className="space-y-1">
-            <button className="flex w-full items-center gap-3 rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-700">
+            <button
+              onClick={() => setActiveSection('applications')}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${activeSection === 'applications' ? 'bg-blue-50 text-blue-700' : isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
               <Icon name="briefcase" />
               Applications
             </button>
-            <button className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'}`}>
+            <button
+              onClick={() => setActiveSection('calendar')}
+              className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${activeSection === 'calendar' ? 'bg-blue-50 text-blue-700' : isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
               <Icon name="calendar" />
-              Calendar (soon)
+              Calendar
             </button>
           </nav>
 
           <section className={`mt-8 rounded-lg border p-4 transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-950/40' : 'border-stone-200 bg-[#fffdf8]'}`}>
             <div className="mb-3 flex items-center justify-between">
+              <button
+                aria-label="Previous month"
+                onClick={() => moveCalendarMonth(-1)}
+                className={`rounded-md px-2 py-1 text-sm font-bold transition-colors ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-[#f7f3ea]'}`}
+              >
+                ‹
+              </button>
               <p className="text-sm font-semibold">{monthLabel}</p>
-              <Icon name="calendar" />
+              <button
+                aria-label="Next month"
+                onClick={() => moveCalendarMonth(1)}
+                className={`rounded-md px-2 py-1 text-sm font-bold transition-colors ${isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-[#f7f3ea]'}`}
+              >
+                ›
+              </button>
             </div>
             <div className={`grid grid-cols-7 gap-1 text-center text-[11px] ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
               {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}
-              {days.map((day, index) => (
+              {days.map((day, index) => {
+                const dateValue = day ? toCalendarDate(calendarMonth.getFullYear(), calendarMonth.getMonth(), day) : '';
+                const dayEvents = dateValue ? calendarEventsByDate[dateValue] ?? [] : [];
+                const isToday = dateValue === todayDate;
+                const isSelected = dateValue === selectedCalendarDate;
+
+                return (
+                  <button
+                    key={`${day ?? 'blank'}-${index}`}
+                    disabled={!day}
+                    onClick={() => dateValue && setSelectedCalendarDate(dateValue)}
+                    className={`relative aspect-square rounded-md text-xs transition-colors disabled:hover:bg-transparent ${isSelected ? 'bg-slate-900 text-white ring-2 ring-blue-300' : isToday ? 'bg-blue-600 text-white' : isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-slate-100'}`}
+                  >
+                    {day}
+                    {dayEvents.length > 0 && (
+                      <span className="absolute inset-x-0 bottom-1 flex justify-center gap-0.5">
+                        {dayEvents.slice(0, 3).map((event) => (
+                          <span key={event.id} className={`h-1 w-1 rounded-full ${calendarDotStyles[event.type]}`} />
+                        ))}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <div className={`mt-4 rounded-lg border p-3 ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#f7f3ea]'}`}>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-bold">{formatFriendlyDate(selectedCalendarDate)}</p>
                 <button
-                  key={`${day ?? 'blank'}-${index}`}
-                  disabled={!day}
-                  className={`aspect-square rounded-md text-xs transition-colors ${day === currentDate.getDate() ? 'bg-blue-600 text-white' : isDarkMode ? 'hover:bg-slate-800 disabled:hover:bg-transparent' : 'hover:bg-slate-100 disabled:hover:bg-transparent'}`}
+                  onClick={() => openReminderModal(selectedCalendarDate)}
+                  className="rounded-full bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-blue-700"
                 >
-                  {day}
+                  + Add
                 </button>
-              ))}
+              </div>
+              <div className="space-y-2">
+                {selectedDayEvents.length > 0 ? (
+                  selectedDayEvents.slice(0, 3).map((event) => (
+                    <CalendarEventItem
+                      key={event.id}
+                      event={event}
+                      isDarkMode={isDarkMode}
+                      onDelete={event.reminderId ? () => removeCalendarReminder(event.reminderId as string) : undefined}
+                    />
+                  ))
+                ) : (
+                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>No calendar items for this day.</p>
+                )}
+              </div>
+            </div>
+            <div className="mt-4">
+              <p className={`mb-2 text-xs font-bold uppercase tracking-wide ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                Next actions
+              </p>
+              <div className="space-y-2">
+                {upcomingEvents.length > 0 ? (
+                  upcomingEvents.slice(0, 3).map((event) => (
+                    <CalendarEventItem
+                      key={event.id}
+                      event={event}
+                      isDarkMode={isDarkMode}
+                      onDelete={event.reminderId ? () => removeCalendarReminder(event.reminderId as string) : undefined}
+                    />
+                  ))
+                ) : (
+                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>No upcoming actions yet.</p>
+                )}
+              </div>
             </div>
           </section>
 
@@ -471,16 +767,28 @@ export default function DashboardClient({
           <header className={`mb-6 flex flex-col gap-4 border-b pb-5 transition-colors sm:flex-row sm:items-center sm:justify-between ${isDarkMode ? 'border-slate-800' : 'border-stone-200'}`}>
             <div>
               <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>{userEmail}</p>
-              <h1 className={`text-2xl font-bold tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-950'}`}>{demoMode ? 'Demo workspace' : 'Welcome Back!'}</h1>
+              <h1 className={`text-2xl font-bold tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-950'}`}>
+                {activeSection === 'calendar' ? 'Calendar' : demoMode ? 'Demo workspace' : 'Applications'}
+              </h1>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => setManualOpen((open) => !open)}
-                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm transition-colors ${isDarkMode ? 'border-slate-700 bg-slate-900 text-slate-100 hover:border-blue-500' : 'border-stone-300 bg-[#fffdf8] text-slate-700 hover:border-blue-300'}`}
-              >
-                <Icon name="plus" />
-                Add manually
-              </button>
+              {activeSection === 'applications' ? (
+                <button
+                  onClick={openAddJobModal}
+                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm transition-colors ${isDarkMode ? 'border-slate-700 bg-slate-900 text-slate-100 hover:border-blue-500' : 'border-stone-300 bg-[#fffdf8] text-slate-700 hover:border-blue-300'}`}
+                >
+                  <Icon name="plus" />
+                  Add manually
+                </button>
+              ) : (
+                <button
+                  onClick={() => openReminderModal()}
+                  className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold shadow-sm transition-colors ${isDarkMode ? 'border-slate-700 bg-slate-900 text-slate-100 hover:border-blue-500' : 'border-stone-300 bg-[#fffdf8] text-slate-700 hover:border-blue-300'}`}
+                >
+                  <Icon name="plus" />
+                  Add reminder
+                </button>
+              )}
               <button
                 onClick={handleSignOut}
                 className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-slate-800"
@@ -491,6 +799,27 @@ export default function DashboardClient({
             </div>
           </header>
 
+          <div className={`mb-5 grid grid-cols-2 rounded-xl border p-1 lg:hidden ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fffdf8]'}`}>
+            {[
+              ['applications', 'Applications'],
+              ['calendar', 'Calendar'],
+            ].map(([section, label]) => (
+              <button
+                key={section}
+                onClick={() => setActiveSection(section as DashboardSection)}
+                className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${activeSection === section ? 'bg-blue-600 text-white shadow-sm' : isDarkMode ? 'text-slate-300 hover:bg-slate-800' : 'text-slate-600 hover:bg-[#f7f3ea]'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {message && (
+            <p className={`mb-4 rounded-lg border px-4 py-3 text-sm ${isDarkMode ? 'border-slate-800 bg-slate-900 text-slate-300' : 'border-stone-200 bg-[#fffdf8] text-slate-600'}`}>
+              {savingId ? 'Saving changes...' : message}
+            </p>
+          )}
+
+          {activeSection === 'applications' && (
           <section className={`mb-5 rounded-lg border p-4 shadow-sm transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fffdf8]'}`}>
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
@@ -512,49 +841,159 @@ export default function DashboardClient({
               placeholder="Paste a job description here..."
               className={`min-h-32 w-full resize-y rounded-lg border px-3 py-3 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500 focus:bg-slate-950' : 'border-stone-200 bg-[#f7f3ea] text-slate-900 focus:bg-[#fffdf8]'}`}
             />
-            {message && <p className={`mt-2 text-sm ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>{savingId ? 'Saving changes...' : message}</p>}
           </section>
-
-          {manualOpen && (
-            <form onSubmit={handleManualSubmit} className={`mb-5 grid gap-3 rounded-lg border p-4 shadow-sm transition-colors md:grid-cols-3 ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fffdf8]'}`}>
-              {manualTextFields.map(([field, label]) => (
-                <label key={field} className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
-                  {label}
-                  <input
-                    required={field === 'companyName' || field === 'jobTitle'}
-                    type={field === 'appliedAt' ? 'date' : 'text'}
-                    value={manualJob[field]}
-                    onChange={(event) => setManualJob({ ...manualJob, [field]: event.target.value })}
-                    className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
-                  />
-                </label>
-              ))}
-              <label className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
-                Status
-                <select
-                  value={manualJob.status}
-                  onChange={(event) => setManualJob({ ...manualJob, status: event.target.value as JobStatus })}
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
-                >
-                  {statuses.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
-                </select>
-              </label>
-              <label className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
-                Key skills
-                <input
-                  value={manualJob.keySkills.join(', ')}
-                  onChange={(event) => setManualJob({ ...manualJob, keySkills: splitSkills(event.target.value) })}
-                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
-                />
-              </label>
-              <div className="flex items-end">
-                <button disabled={loading} className="w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60">
-                  {loading ? 'Saving...' : 'Save job'}
-                </button>
-              </div>
-            </form>
           )}
 
+          {activeSection === 'calendar' && (
+          <section className="mb-5 grid gap-4 xl:grid-cols-[1fr_380px]">
+            <div className={`rounded-lg border p-4 shadow-sm transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fffdf8]'}`}>
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-base font-bold">{monthLabel}</h2>
+                  <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Select a day to review applications and reminders.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    aria-label="Previous month"
+                    onClick={() => moveCalendarMonth(-1)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-bold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+                  >
+                    ‹
+                  </button>
+                  <button
+                    aria-label="Next month"
+                    onClick={() => moveCalendarMonth(1)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-bold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+                  >
+                    ›
+                  </button>
+                </div>
+              </div>
+              <div className={`grid grid-cols-7 gap-2 text-center text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => <span key={day} className="py-2 font-semibold">{day}</span>)}
+                {days.map((day, index) => {
+                  const dateValue = day ? toCalendarDate(calendarMonth.getFullYear(), calendarMonth.getMonth(), day) : '';
+                  const dayEvents = dateValue ? calendarEventsByDate[dateValue] ?? [] : [];
+                  const isToday = dateValue === todayDate;
+                  const isSelected = dateValue === selectedCalendarDate;
+
+                  return (
+                    <button
+                      key={`${day ?? 'blank'}-${index}`}
+                      disabled={!day}
+                      onClick={() => dateValue && setSelectedCalendarDate(dateValue)}
+                      className={`min-h-24 rounded-xl border p-2 text-left transition-colors disabled:border-transparent disabled:bg-transparent ${isSelected ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-200' : isDarkMode ? 'border-slate-800 bg-slate-950/50 hover:bg-slate-800' : 'border-stone-200 bg-[#f7f3ea] hover:bg-[#fffdf8]'} ${isToday && !isSelected ? 'border-blue-400' : ''}`}
+                    >
+                      <span className={`text-sm font-bold ${isSelected ? 'text-blue-700' : isDarkMode ? 'text-slate-100' : 'text-slate-800'}`}>
+                        {day}
+                      </span>
+                      <div className="mt-2 space-y-1">
+                        {dayEvents.slice(0, 2).map((event) => (
+                          <span
+                            key={event.id}
+                            className={`block truncate rounded-full px-2 py-0.5 text-[10px] font-semibold ${calendarTypeStyles[event.type]}`}
+                          >
+                            {event.title}
+                          </span>
+                        ))}
+                        {dayEvents.length > 2 && (
+                          <span className={`block text-[10px] font-semibold ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                            +{dayEvents.length - 2} more
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className={`rounded-lg border p-4 shadow-sm transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fffdf8]'}`}>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between xl:flex-col xl:items-stretch">
+                  <div>
+                    <h2 className="text-base font-bold">Upcoming actions</h2>
+                    <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Interviews, follow-ups, reminders, and application dates.
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => openReminderModal()}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
+                  >
+                    <Icon name="plus" />
+                    Add reminder
+                  </button>
+                </div>
+                <div className="space-y-3">
+                  {upcomingEvents.length > 0 ? (
+                    upcomingEvents.map((event) => (
+                      <CalendarEventItem
+                        key={event.id}
+                        event={event}
+                        isDarkMode={isDarkMode}
+                        onDelete={event.reminderId ? () => removeCalendarReminder(event.reminderId as string) : undefined}
+                      />
+                    ))
+                  ) : (
+                    <div className={`rounded-lg border p-4 text-sm ${isDarkMode ? 'border-slate-800 bg-slate-950/50 text-slate-400' : 'border-stone-200 bg-[#f7f3ea] text-slate-500'}`}>
+                      Add a reminder or set applied dates to build your job search schedule.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className={`rounded-lg border p-4 shadow-sm transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fffdf8]'}`}>
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-bold">{formatFriendlyDate(selectedCalendarDate)}</h2>
+                    <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                      Selected day
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => openReminderModal(selectedCalendarDate)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+                  >
+                    Add item
+                  </button>
+                </div>
+                <input
+                  type="date"
+                  value={selectedCalendarDate}
+                  onChange={(event) => {
+                    const nextDate = event.target.value;
+                    setSelectedCalendarDate(nextDate);
+                    if (nextDate) {
+                      setCalendarMonth(startOfMonth(new Date(`${nextDate}T00:00:00`)));
+                    }
+                  }}
+                  className={`mb-3 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
+                />
+                <div className="space-y-3">
+                  {selectedDayEvents.length > 0 ? (
+                    selectedDayEvents.map((event) => (
+                      <CalendarEventItem
+                        key={event.id}
+                        event={event}
+                        isDarkMode={isDarkMode}
+                        onDelete={event.reminderId ? () => removeCalendarReminder(event.reminderId as string) : undefined}
+                      />
+                    ))
+                  ) : (
+                    <p className={`rounded-lg border p-4 text-sm ${isDarkMode ? 'border-slate-800 bg-slate-950/50 text-slate-400' : 'border-stone-200 bg-[#f7f3ea] text-slate-500'}`}>
+                      Nothing scheduled for this day.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+          )}
+
+          {activeSection === 'applications' && (
           <section className={`overflow-hidden rounded-lg border shadow-sm transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-stone-200 bg-[#fffdf8]'}`}>
             <div className={`flex items-center justify-between gap-3 border-b px-4 py-3 ${isDarkMode ? 'border-slate-800' : 'border-stone-200'}`}>
               <h2 className="text-base font-bold">Job tracker</h2>
@@ -581,18 +1020,52 @@ export default function DashboardClient({
                 </button>
               </div>
             </div>
+            <div className={`border-b px-4 py-4 ${isDarkMode ? 'border-slate-800' : 'border-stone-200'}`}>
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <label className="w-full lg:max-w-lg">
+                  <span className={`mb-1 block text-xs font-semibold uppercase tracking-wide ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Search applications
+                  </span>
+                  <input
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search company, job title, or location..."
+                    className={`w-full rounded-lg border px-3 py-2.5 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500' : 'border-stone-200 bg-[#f7f3ea] text-slate-900 placeholder:text-slate-400 focus:bg-[#fffdf8]'}`}
+                  />
+                </label>
+                <div className={`rounded-lg border px-3 py-2 text-sm font-semibold ${isDarkMode ? 'border-slate-800 bg-slate-950 text-slate-300' : 'border-stone-200 bg-[#f7f3ea] text-slate-600'}`}>
+                  {filteredJobs.length} of {jobs.length} shown
+                </div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {statusTabs.map((status) => {
+                  const isActive = statusFilter === status;
+                  const count = status === 'ALL' ? jobs.length : trackerStats.statusCounts[status];
+
+                  return (
+                    <button
+                      key={status}
+                      onClick={() => setStatusFilter(status)}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${isActive ? 'border-blue-600 bg-blue-600 text-white shadow-sm' : isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-stone-300 text-slate-600 hover:bg-[#f7f3ea]'}`}
+                    >
+                      {status === 'ALL' ? 'All' : statusLabel(status)} · {count}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div className="overflow-x-auto">
               <table className="min-w-[1100px] w-full border-collapse text-center text-sm">
                 <thead className={`text-xs uppercase ${isDarkMode ? 'bg-slate-950 text-slate-400' : 'bg-[#f2ecdf] text-slate-500'}`}>
                   <tr>
                     {deleteMode && <th className="w-12 px-3 py-3 text-center font-semibold">Pick</th>}
-                    {['Company', 'Job Title', 'Location', 'Type', 'Salary', 'Status', 'Applied', 'Skills', 'Summary'].map((heading) => (
+                    {['Company', 'Job Title', 'Location', 'Type', 'Salary', 'Status', 'Applied', 'Skills', 'Summary', 'Actions'].map((heading) => (
                       <th key={heading} className="px-3 py-3 text-center font-semibold">{heading}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800' : 'divide-stone-100'}`}>
-                  {displayedJobs.map((job) => (
+                  {filteredJobs.map((job) => (
                     <tr key={job.id} className={`align-top transition-colors ${isDarkMode ? 'hover:bg-slate-800/70' : 'hover:bg-[#f7f3ea]'}`}>
                       {deleteMode && (
                         <td className="px-3 py-3">
@@ -624,16 +1097,369 @@ export default function DashboardClient({
                         </select>
                       </td>
                       <td className="px-3 py-3"><Editable isDarkMode={isDarkMode} type="date" value={job.appliedAt} onChange={(value) => updateJobLocal(job.id, 'appliedAt', value)} onCommit={(value) => persistJobField(job.id, 'appliedAt', value)} /></td>
-                      <td className="px-3 py-3"><Editable isDarkMode={isDarkMode} value={job.keySkills.join(', ')} onChange={(value) => updateJobLocal(job.id, 'keySkills', splitSkills(value))} onCommit={(value) => persistJobField(job.id, 'keySkills', splitSkills(value))} /></td>
-                      <td className="px-3 py-3"><Editable isDarkMode={isDarkMode} value={job.summary} onChange={(value) => updateJobLocal(job.id, 'summary', value)} onCommit={(value) => persistJobField(job.id, 'summary', value)} /></td>
+                      <td className="px-3 py-3">
+                        <button
+                          onClick={() => setDetailJobId(job.id)}
+                          className={`mx-auto block max-w-40 truncate rounded-md px-2 py-1 text-sm transition-colors ${isDarkMode ? 'text-slate-200 hover:bg-slate-950' : 'text-slate-700 hover:bg-[#fffdf8]'}`}
+                          title={job.keySkills.join(', ') || 'No skills listed'}
+                        >
+                          {job.keySkills.length > 0 ? job.keySkills.slice(0, 2).join(', ') : 'View skills'}
+                        </button>
+                      </td>
+                      <td className="px-3 py-3">
+                        <button
+                          onClick={() => setDetailJobId(job.id)}
+                          className={`mx-auto block max-w-56 truncate rounded-md px-2 py-1 text-sm transition-colors ${isDarkMode ? 'text-slate-200 hover:bg-slate-950' : 'text-slate-700 hover:bg-[#fffdf8]'}`}
+                          title={job.summary || 'No summary listed'}
+                        >
+                          {job.summary || 'View details'}
+                        </button>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex justify-center gap-2">
+                          <button
+                            onClick={() => setDetailJobId(job.id)}
+                            className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+                          >
+                            View
+                          </button>
+                          <button
+                            onClick={() => openEditJobModal(job)}
+                            className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
+                  {filteredJobs.length === 0 && (
+                    <tr>
+                      <td colSpan={deleteMode ? 11 : 10} className={`px-4 py-10 text-center text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                        No job listings match the current search and status filters.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </section>
+          )}
         </section>
       </div>
+      {detailJob && (
+        <div
+          className="fixed inset-0 z-30 flex justify-end bg-slate-950/50 backdrop-blur-sm"
+          onClick={() => setDetailJobId(null)}
+        >
+          <aside
+            className={`h-full w-full max-w-xl overflow-y-auto border-l p-6 shadow-2xl transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-950'}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <span className={`mb-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${statStyles[detailJob.status]}`}>
+                  {statusLabel(detailJob.status)}
+                </span>
+                <h2 className="text-2xl font-bold">{detailJob.jobTitle || 'Untitled role'}</h2>
+                <p className={`mt-1 text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {detailJob.companyName || 'Unknown company'}
+                </p>
+              </div>
+              <button
+                onClick={() => setDetailJobId(null)}
+                className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                ['Location', detailJob.location],
+                ['Employment type', detailJob.employmentType],
+                ['Salary range', detailJob.salaryRange],
+                ['Applied date', detailJob.appliedAt],
+              ].map(([label, value]) => (
+                <div key={label} className={`rounded-lg border p-4 ${isDarkMode ? 'border-slate-800 bg-slate-950/50' : 'border-stone-200 bg-[#f7f3ea]'}`}>
+                  <p className={`text-xs font-semibold uppercase tracking-wide ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>{label}</p>
+                  <p className="mt-1 text-sm font-semibold">{value || 'Not listed'}</p>
+                </div>
+              ))}
+            </div>
+
+            <section className={`mt-5 rounded-lg border p-4 ${isDarkMode ? 'border-slate-800 bg-slate-950/50' : 'border-stone-200 bg-[#f7f3ea]'}`}>
+              <p className={`text-xs font-semibold uppercase tracking-wide ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                Key skills
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {detailJob.keySkills.length > 0 ? (
+                  detailJob.keySkills.map((skill) => (
+                    <span key={skill} className={`rounded-full px-3 py-1 text-xs font-semibold ${isDarkMode ? 'bg-slate-800 text-slate-200' : 'bg-white text-slate-700'}`}>
+                      {skill}
+                    </span>
+                  ))
+                ) : (
+                  <p className={`text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>No skills listed.</p>
+                )}
+              </div>
+            </section>
+
+            <section className={`mt-5 rounded-lg border p-4 ${isDarkMode ? 'border-slate-800 bg-slate-950/50' : 'border-stone-200 bg-[#f7f3ea]'}`}>
+              <p className={`text-xs font-semibold uppercase tracking-wide ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                Summary
+              </p>
+              <p className={`mt-3 whitespace-pre-wrap text-sm leading-6 ${isDarkMode ? 'text-slate-300' : 'text-slate-700'}`}>
+                {detailJob.summary || 'No summary listed.'}
+              </p>
+            </section>
+
+            <button
+              onClick={() => openEditJobModal(detailJob)}
+              className="mt-5 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"
+            >
+              Edit job details
+            </button>
+          </aside>
+        </div>
+      )}
+      {reminderModalOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          onClick={() => setReminderModalOpen(false)}
+        >
+          <form
+            onSubmit={handleReminderSubmit}
+            className={`w-full max-w-2xl rounded-2xl border p-5 shadow-2xl transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-950'}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className={`mb-5 flex items-start justify-between gap-4 border-b pb-4 ${isDarkMode ? 'border-slate-800' : 'border-stone-200'}`}>
+              <div>
+                <h2 className="text-xl font-bold">Add Calendar Item</h2>
+                <p className={`mt-1 text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  Schedule interviews, follow-ups, or personal reminders.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReminderModalOpen(false)}
+                className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                Type
+                <select
+                  value={reminderForm.type}
+                  onChange={(event) =>
+                    setReminderForm((currentForm) => ({
+                      ...currentForm,
+                      type: event.target.value as CalendarReminderType,
+                    }))
+                  }
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
+                >
+                  {reminderTypes.map((type) => (
+                    <option key={type} value={type}>{calendarTypeLabel(type)}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                Date
+                <input
+                  required
+                  type="date"
+                  value={reminderForm.date}
+                  onChange={(event) =>
+                    setReminderForm((currentForm) => ({
+                      ...currentForm,
+                      date: event.target.value,
+                    }))
+                  }
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
+                />
+              </label>
+
+              <label className={`text-sm font-medium sm:col-span-2 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                Related application
+                <select
+                  value={reminderForm.applicationId}
+                  onChange={(event) =>
+                    setReminderForm((currentForm) => ({
+                      ...currentForm,
+                      applicationId: event.target.value,
+                    }))
+                  }
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
+                >
+                  <option value="">General reminder</option>
+                  {jobs.map((job) => (
+                    <option key={job.id} value={job.id}>
+                      {job.companyName || 'Unknown company'} — {job.jobTitle || 'Untitled role'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className={`text-sm font-medium sm:col-span-2 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                Title
+                <input
+                  value={reminderForm.title}
+                  onChange={(event) =>
+                    setReminderForm((currentForm) => ({
+                      ...currentForm,
+                      title: event.target.value,
+                    }))
+                  }
+                  placeholder="Leave blank to generate a useful title"
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500' : 'border-stone-200 bg-[#fffdf8] text-slate-900 placeholder:text-slate-400'}`}
+                />
+              </label>
+
+              <label className={`text-sm font-medium sm:col-span-2 ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                Notes
+                <textarea
+                  value={reminderForm.note}
+                  onChange={(event) =>
+                    setReminderForm((currentForm) => ({
+                      ...currentForm,
+                      note: event.target.value,
+                    }))
+                  }
+                  placeholder="Meeting link, recruiter name, preparation notes..."
+                  className={`mt-1 min-h-24 w-full resize-y rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500' : 'border-stone-200 bg-[#fffdf8] text-slate-900 placeholder:text-slate-400'}`}
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => setReminderModalOpen(false)}
+                className={`rounded-lg border px-4 py-2 text-sm font-semibold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+              >
+                Cancel
+              </button>
+              <button className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700">
+                Save calendar item
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {jobModal.isOpen && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"
+          onClick={closeJobModal}
+        >
+          <form
+            onSubmit={handleJobModalSubmit}
+            className={`max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-2xl border p-5 shadow-2xl transition-colors ${isDarkMode ? 'border-slate-800 bg-slate-900 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-950'}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className={`mb-5 flex items-start justify-between gap-4 border-b pb-4 ${isDarkMode ? 'border-slate-800' : 'border-stone-200'}`}>
+              <div>
+                <h2 className="text-xl font-bold">{jobModal.mode === 'edit' ? 'Edit Job' : 'Add Job'}</h2>
+                <p className={`mt-1 text-sm ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                  {jobModal.mode === 'edit' ? 'Update the saved job listing details.' : 'Add a job manually when AI import is not needed.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeJobModal}
+                className={`rounded-lg border px-3 py-1.5 text-sm font-semibold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              {manualTextFields.map(([field, label]) => (
+                <label
+                  key={field}
+                  className={`text-sm font-medium ${field === 'summary' ? 'md:col-span-2' : ''} ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}
+                >
+                  {label}
+                  {field === 'summary' ? (
+                    <textarea
+                      value={jobModal.values[field]}
+                      onChange={(event) =>
+                        setJobModal((currentModal) => ({
+                          ...currentModal,
+                          values: { ...currentModal.values, [field]: event.target.value },
+                        }))
+                      }
+                      className={`mt-1 min-h-28 w-full resize-y rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
+                    />
+                  ) : (
+                    <input
+                      required={field === 'companyName' || field === 'jobTitle'}
+                      type={field === 'appliedAt' ? 'date' : 'text'}
+                      value={jobModal.values[field]}
+                      onChange={(event) =>
+                        setJobModal((currentModal) => ({
+                          ...currentModal,
+                          values: { ...currentModal.values, [field]: event.target.value },
+                        }))
+                      }
+                      className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
+                    />
+                  )}
+                </label>
+              ))}
+              <label className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                Status
+                <select
+                  value={jobModal.values.status}
+                  onChange={(event) =>
+                    setJobModal((currentModal) => ({
+                      ...currentModal,
+                      values: { ...currentModal.values, status: event.target.value as JobStatus },
+                    }))
+                  }
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100' : 'border-stone-200 bg-[#fffdf8] text-slate-900'}`}
+                >
+                  {statuses.map((status) => <option key={status} value={status}>{statusLabel(status)}</option>)}
+                </select>
+              </label>
+              <label className={`text-sm font-medium ${isDarkMode ? 'text-slate-200' : 'text-slate-700'}`}>
+                Key skills
+                <input
+                  value={jobModal.values.keySkills.join(', ')}
+                  onChange={(event) =>
+                    setJobModal((currentModal) => ({
+                      ...currentModal,
+                      values: { ...currentModal.values, keySkills: splitSkills(event.target.value) },
+                    }))
+                  }
+                  placeholder="React, Supabase, TypeScript"
+                  className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:border-blue-400 focus:ring-4 focus:ring-blue-100 ${isDarkMode ? 'border-slate-700 bg-slate-950 text-slate-100 placeholder:text-slate-500' : 'border-stone-200 bg-[#fffdf8] text-slate-900 placeholder:text-slate-400'}`}
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={closeJobModal}
+                className={`rounded-lg border px-4 py-2 text-sm font-semibold transition-colors ${isDarkMode ? 'border-slate-700 text-slate-200 hover:bg-slate-800' : 'border-stone-300 text-slate-700 hover:bg-[#f7f3ea]'}`}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={loading}
+                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+              >
+                {loading ? 'Saving...' : jobModal.mode === 'edit' ? 'Save changes' : 'Save job'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
       <button
         aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
         onClick={toggleTheme}
@@ -674,6 +1500,51 @@ function Editable({
   );
 }
 
+function CalendarEventItem({
+  event,
+  isDarkMode,
+  onDelete,
+}: {
+  event: CalendarEvent;
+  isDarkMode: boolean;
+  onDelete?: () => void;
+}) {
+  return (
+    <div className={`rounded-lg border p-3 ${isDarkMode ? 'border-slate-800 bg-slate-950/50' : 'border-stone-200 bg-[#fffdf8]'}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${calendarTypeStyles[event.type]}`}>
+              {calendarTypeLabel(event.type)}
+            </span>
+            <span className={`text-[11px] font-semibold ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+              {formatFriendlyDate(event.date)}
+            </span>
+          </div>
+          <p className="truncate text-sm font-bold">{event.title}</p>
+          <p className={`truncate text-xs ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
+            {event.companyName}{event.jobTitle ? ` · ${event.jobTitle}` : ''}
+          </p>
+          {event.note && (
+            <p className={`mt-2 line-clamp-2 text-xs leading-5 ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
+              {event.note}
+            </p>
+          )}
+        </div>
+        {onDelete && (
+          <button
+            aria-label={`Remove ${event.title}`}
+            onClick={onDelete}
+            className={`shrink-0 rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${isDarkMode ? 'text-rose-300 hover:bg-rose-950/40' : 'text-rose-600 hover:bg-rose-50'}`}
+          >
+            Remove
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function applicationToJob(application: ApplicationRecord): JobApplication {
   return {
     id: application.id,
@@ -687,6 +1558,64 @@ function applicationToJob(application: ApplicationRecord): JobApplication {
     keySkills: application.key_skills ?? [],
     summary: application.summary ?? '',
   };
+}
+
+function buildCalendarEvents(jobs: JobApplication[], reminders: CalendarReminder[]): CalendarEvent[] {
+  const generatedEvents = jobs.flatMap((job): CalendarEvent[] => {
+    if (!job.appliedAt) return [];
+
+    const events: CalendarEvent[] = [
+      {
+        id: `applied-${job.id}`,
+        applicationId: job.id,
+        companyName: job.companyName || 'Unknown company',
+        jobTitle: job.jobTitle,
+        title: 'Application submitted',
+        date: job.appliedAt,
+        type: 'APPLIED',
+        note: 'Captured from the application date in your tracker.',
+      },
+    ];
+
+    if (job.status !== 'OFFER' && job.status !== 'REJECTED') {
+      events.push({
+        id: `follow-up-${job.id}`,
+        applicationId: job.id,
+        companyName: job.companyName || 'Unknown company',
+        jobTitle: job.jobTitle,
+        title: 'Suggested follow-up',
+        date: addDaysToDateInput(job.appliedAt, 7),
+        type: 'FOLLOW_UP',
+        note: 'Suggested 7 days after applying. Add a manual reminder if you want a custom note.',
+      });
+    }
+
+    return events;
+  });
+
+  const reminderEvents = reminders.map((reminder): CalendarEvent => {
+    const relatedJob = jobs.find((job) => job.id === reminder.applicationId);
+
+    return {
+      id: `manual-${reminder.id}`,
+      reminderId: reminder.id,
+      applicationId: reminder.applicationId,
+      companyName: relatedJob?.companyName || 'General',
+      jobTitle: relatedJob?.jobTitle || '',
+      title: reminder.title,
+      date: reminder.date,
+      type: reminder.type,
+      note: reminder.note,
+    };
+  });
+
+  return [...generatedEvents, ...reminderEvents].sort((first, second) => {
+    if (first.date === second.date) {
+      return first.title.localeCompare(second.title);
+    }
+
+    return first.date.localeCompare(second.date);
+  });
 }
 
 function jobToInsert(job: Omit<JobApplication, 'id'>, userId: string): ApplicationInsert {
@@ -707,6 +1636,34 @@ function jobToInsert(job: Omit<JobApplication, 'id'>, userId: string): Applicati
   }
 
   return payload;
+}
+
+function jobToFormValues(job: JobApplication): Omit<JobApplication, 'id'> {
+  return {
+    companyName: job.companyName,
+    jobTitle: job.jobTitle,
+    location: job.location,
+    employmentType: job.employmentType,
+    salaryRange: job.salaryRange,
+    status: job.status,
+    appliedAt: job.appliedAt,
+    keySkills: job.keySkills,
+    summary: job.summary,
+  };
+}
+
+function jobToUpdate(job: Omit<JobApplication, 'id'>): ApplicationFieldUpdate {
+  return {
+    company_name: job.companyName,
+    job_title: job.jobTitle,
+    location: job.location,
+    employment_type: job.employmentType,
+    salary_range: job.salaryRange,
+    key_skills: job.keySkills,
+    summary: job.summary,
+    status: job.status,
+    applied_at: job.appliedAt ? new Date(`${job.appliedAt}T00:00:00`).toISOString() : null,
+  };
 }
 
 function fieldToUpdate<Field extends EditableJobField>(
@@ -732,6 +1689,62 @@ function splitSkills(value: string) {
     .split(',')
     .map((skill) => skill.trim())
     .filter(Boolean);
+}
+
+function readCalendarReminders(storageKey: string): CalendarReminder[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const storedValue = localStorage.getItem(storageKey);
+    if (!storedValue) return [];
+
+    const reminders = JSON.parse(storedValue) as CalendarReminder[];
+    if (!Array.isArray(reminders)) return [];
+
+    return reminders.filter((reminder) =>
+      typeof reminder.id === 'string' &&
+      typeof reminder.applicationId === 'string' &&
+      typeof reminder.title === 'string' &&
+      typeof reminder.date === 'string' &&
+      typeof reminder.note === 'string' &&
+      (reminder.type === 'FOLLOW_UP' || reminder.type === 'INTERVIEW' || reminder.type === 'REMINDER')
+    );
+  } catch {
+    return [];
+  }
+}
+
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function toDateInputValue(date: Date) {
+  return toCalendarDate(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function toCalendarDate(year: number, month: number, day: number) {
+  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function addDaysToDateInput(dateValue: string, daysToAdd: number) {
+  const date = new Date(`${dateValue}T00:00:00`);
+  date.setDate(date.getDate() + daysToAdd);
+  return toDateInputValue(date);
+}
+
+function formatFriendlyDate(dateValue: string) {
+  if (!dateValue) return 'No date';
+
+  return new Date(`${dateValue}T00:00:00`).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function calendarTypeLabel(type: CalendarEventType) {
+  if (type === 'FOLLOW_UP') return 'Follow-up';
+  return type.charAt(0) + type.slice(1).toLowerCase();
 }
 
 function normalizeStatus(status: string | null): JobStatus {
